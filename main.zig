@@ -12,6 +12,9 @@ const SOL_SOCKET: comptime_int = os.SOL.SOCKET;
 const SO_RCVTIMEO: comptime_int = os.SO.RCVTIMEO;
 const SOL_IP: comptime_int = os.SOL.IP;
 
+// 64 ms TTL
+const ttl_val = [4]u8{ 64, 0, 0, 0 };
+
 var g_interrupted: bool = false;
 
 // 8, 0 type/code
@@ -21,14 +24,17 @@ const identifier = [_]u8{ 0, 0 };
 // 8 * 56 octets
 const data = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-// Example of valid echo request packet
-// [_]u8{ 8, 0, 6, 169, 0, 0, 241, 86} ++ data;
+var startTime: i64 = 0;
+
+var displayed_init_ping = false;
+
+var total_seq: u16 = 0;
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(std.heap.page_allocator);
     defer std.process.argsFree(std.heap.page_allocator, args);
 
-    // Checks if there has been provided IP address as arg
+    // Ensure IP address has been provided as arg
     if (args.len < 2) {
         print("Expected IP-Address to be provided as args[1]. For example: zing 127.0.0.1 \n", .{});
         return;
@@ -36,7 +42,7 @@ pub fn main() !void {
     const socket = setup_socket() catch return undefined;
     defer os.close(socket);
 
-    // Getting IP from the args
+    // Getting IP from the args and convert it to string
     const ipString = args[1];
     var ip_tmp: [4]u8 = undefined;
 
@@ -59,12 +65,11 @@ pub fn main() !void {
 
     const ip = &ip_tmp;
 
-    var rand_impl = std.rand.DefaultPrng.init(5000);
+    var seq_num: usize = 0;
     while (!g_interrupted) {
-        // Generate rnd seq and create icmp packet with the correct checksum
-        var num = @mod(rand_impl.random().int(i32), 6500);
-        const lowerByte = @as(u8, @intCast(num & 0xFF));
-        const upperByte = @as(u8, @intCast(num >> 8));
+        seq_num += 1;
+        const lowerByte = @as(u8, @intCast(seq_num & 0xFF));
+        const upperByte = @as(u8, @intCast(seq_num >> 8));
         const seq = [_]u8{ upperByte, lowerByte };
 
         // Calc the checksum for the payload and create the final icmp packet
@@ -74,6 +79,7 @@ pub fn main() !void {
         var packet = req ++ csum ++ identifier ++ seq ++ data;
 
         // Actual send and await for the resp data
+        startTime = std.time.milliTimestamp();
         try send_ping(socket, &packet, ip);
         _ = listener(socket);
 
@@ -81,22 +87,7 @@ pub fn main() !void {
         const nanoseconds_in_second = std.time.ns_per_s;
         std.time.sleep(nanoseconds_in_second);
     }
-}
-
-fn calc_checksum(array: []u8) struct { be: u8, le: u8 } {
-    var sum: u16 = 0;
-    var i: usize = 0;
-    while (i < array.len) : (i += 2) {
-        const upperByte = @as(u16, @intCast(array[i])) << 8;
-        const lowerByte = @as(u16, @intCast(array[i + 1]));
-        const combinedValue = upperByte | lowerByte;
-        sum += combinedValue;
-    }
-
-    const lowerByte = @as(u8, @intCast(~sum & 0xFF));
-    const upperByte = @as(u8, @intCast(~sum >> 8));
-
-    return .{ .be = upperByte, .le = lowerByte };
+    displayed_init_ping = false;
 }
 
 fn send_ping(socket: os.fd_t, packet: []u8, ip: []u8) !void {
@@ -107,9 +98,6 @@ fn send_ping(socket: os.fd_t, packet: []u8, ip: []u8) !void {
 }
 
 pub fn setup_socket() !os.fd_t {
-    // 64 ms TTL
-    const ttl_val = [4]u8{ 64, 0, 0, 0 };
-
     // Create the socket.
     const socket = try os.socket(os.AF.INET, SOCK_RAW, IPPROTO_ICMP);
     errdefer os.close(socket);
@@ -131,6 +119,7 @@ pub fn listener(socket: i32) ?void {
     var packet: [64]u8 = undefined;
     var attempts: u8 = 0;
     const max_attempts: u8 = 3;
+
     while (true) {
         attempts += 1;
 
@@ -139,14 +128,45 @@ pub fn listener(socket: i32) ?void {
             break;
         }
 
-        if (recv_ping(socket, &recv_addr, packet[0..])) |_result| {
-            _ = _result;
+        if (recv_ping(socket, &recv_addr, packet[0..])) |result| {
+            var ip_header = packet[0..2];
+            const ihl = (ip_header[0] & 0x0F) * 4; // multiiplying by 4 bytes word to get the ip header len
 
-            // const icmp_message = packet[20..res];
-            // print("PING {any}.{any}.{any}.{any}\n", .{ packet[16], packet[17], packet[18], packet[19] });
-            // print("recev packet data: {any} \n", .{icmp_message});
-            print("PING {any}.{any}.{any}.{any} OK\n", .{ packet[16], packet[17], packet[18], packet[19] });
-            // print("OK {any}\n", .{packet});
+            const icmp_message = packet[20..result];
+
+            var b = icmp_message[7];
+            const sequenceNumber: usize = total_seq * 256 + b;
+
+            var resp_seq = icmp_message[6..8];
+            var resp_csum = icmp_message[2..4];
+            var resp_type_code = icmp_message[0..2];
+
+            var resp_msg = [_]u8{ resp_type_code[0], resp_type_code[1] } ++ empty_checksum ++ identifier ++ [_]u8{ resp_seq[0], resp_seq[1] } ++ data;
+
+            // Check resp checksum and break if the sum is incorrect
+            const csum = calc_checksum(&resp_msg);
+            if ((resp_csum[0] != csum.be) or (resp_csum[1] != csum.le)) {
+                print("Incorrect checksum! {any}\n", .{icmp_message});
+                break;
+            }
+
+            if (b == 255) {
+                total_seq += 1;
+            }
+
+            const icmp_payload = (packet.len) - 8;
+            const icmp_total_len = packet.len + ihl;
+            if (displayed_init_ping == false) {
+                print("PING {any}.{any}.{any}.{any} ", .{ packet[16], packet[17], packet[18], packet[19] });
+                print("({any}.{any}.{any}.{any}) {any}({any}) bytes of data \n", .{ packet[16], packet[17], packet[18], packet[19], icmp_payload, icmp_total_len });
+                displayed_init_ping = true;
+            }
+
+            const endTime = std.time.milliTimestamp();
+            const duration = endTime - startTime;
+
+            print("{any} bytes from {any}.{any}.{any}.{any}: icmp_seq={any} ttl={any} time={any} ms\n", .{ packet.len, packet[16], packet[17], packet[18], packet[19], sequenceNumber, packet[8], duration });
+
             break;
         } else |err| {
             print("ERROR {any} \n", .{err});
@@ -154,11 +174,26 @@ pub fn listener(socket: i32) ?void {
         }
         print("Attempts {d}\n", .{attempts});
     }
-
     return null;
 }
 
 pub fn recv_ping(socket: os.fd_t, recv_addr: *os.sockaddr, packet: []u8) !usize {
     var addrlen: u32 = @sizeOf(os.sockaddr);
     return try os.recvfrom(socket, packet, 0, recv_addr, &addrlen);
+}
+
+fn calc_checksum(array: []u8) struct { be: u8, le: u8 } {
+    var sum: u16 = 0;
+    var i: usize = 0;
+    while (i < array.len) : (i += 2) {
+        const upperByte = @as(u16, @intCast(array[i])) << 8;
+        const lowerByte = @as(u16, @intCast(array[i + 1]));
+        const combinedValue = upperByte | lowerByte;
+        sum += combinedValue;
+    }
+
+    const lowerByte = @as(u8, @intCast(~sum & 0xFF));
+    const upperByte = @as(u8, @intCast(~sum >> 8));
+
+    return .{ .be = upperByte, .le = lowerByte };
 }
