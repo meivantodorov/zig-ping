@@ -34,7 +34,7 @@ const Arguments = struct {
 
 const help =
     \\Usage
-    \\  ping [options] <destination>
+    \\  ./zig-ping [options] <destination>
     \\
     \\Options:
     \\  <destination>      dns name or ip address
@@ -53,6 +53,18 @@ pub fn main() !void {
         return;
     }
 
+    for (0.., args[1..]) |i, elem| {
+        if (std.mem.eql(u8, elem, "-h")) {
+            print("{s}\n", .{help});
+            return;
+        }
+
+        if (std.mem.eql(u8, args[i], "-t")) {
+            const argValue = try std.fmt.parseInt(u8, elem, 10);
+            arg_params.ttl = argValue;
+        }
+    }
+
     // Getting IP from the args and convert it to string
     const ipString = args[1];
     var ip_tmp: [4]u8 = undefined;
@@ -69,19 +81,9 @@ pub fn main() !void {
         index += 1;
     }
 
-    for (0.., args[1..]) |i, elem| {
-        if (std.mem.eql(u8, elem, "-h")) {
-            print("{s}\n", .{help});
-            return;
-        }
-        if (std.mem.eql(u8, args[i], "-t")) {
-            const argValue = try std.fmt.parseInt(u8, elem, 10);
-            arg_params.ttl = argValue;
-        }
-    }
     print("arg_params: {any} \n", .{arg_params});
 
-    const socket = setup_socket(arg_params) catch return undefined;
+    const socket = setup_socket(arg_params) catch return;
     defer os.close(socket);
 
     if (index != 4) {

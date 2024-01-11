@@ -12,7 +12,7 @@ This repository contains a simple implementation of a ping program written in Zi
 
 ## Requirements
 
-- Zig compiler (tested with version 0.12.0-dev.1645+7b99189f1)
+- Zig compiler (tested with version 0.11.0)
 - Linux operating system with standard networking capabilities
 
 ## Installation
