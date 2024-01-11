@@ -8,6 +8,7 @@ This repository contains a simple implementation of a ping program written in Zi
 - Receives ICMP echo replies and calculates the round-trip time.
 - Displays the ping results in a readable format.
 - Handles timeouts and errors gracefully.
+- Supports `-h` for help and `-t` for setting the Time-To-Live (TTL) value.
 
 ## Requirements
 
@@ -44,6 +45,11 @@ sudo ./zig-out/bin/zig-ping 1.1.1.1
 
 Replace `1.1.1.1` with the IP address you wish to ping.
 
+### Command Line Options
+
+- `-h`: Display help information.
+- `-t <value>`: Set the Time-To-Live (TTL) value for ICMP packets.
+
 ## Program Output
 
 The program outputs the following information for each ping:
@@ -63,6 +69,10 @@ PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data
 64 bytes from 1.1.1.1: icmp_seq=3 ttl=64 time=10 ms
 ```
 
+## Important Notes
+
+- Incorrectly provided arguments or arguments in the wrong sequence may lead to a crash of the program. Currently, error handling for such cases is not implemented.
+
 ## TODO
 
 - Implement interruption with Ctrl + C and display statistics upon exit.
@@ -73,7 +83,3 @@ PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](https://github.com/git/git-scm.com/blob/main/MIT-LICENSE.txt) file for details.
-
----
-
-This README provides a basic overview of your Zig ping program. Feel free to adjust or expand it as needed to fit the evolving nature of your project.

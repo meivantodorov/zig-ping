@@ -13,8 +13,6 @@ const SO_RCVTIMEO: comptime_int = os.SO.RCVTIMEO;
 const SOL_IP: comptime_int = os.SOL.IP;
 
 // 64 ms TTL
-const ttl_val = [4]u8{ 64, 0, 0, 0 };
-
 var g_interrupted: bool = false;
 
 // 8, 0 type/code
@@ -30,17 +28,30 @@ var displayed_init_ping = false;
 
 var total_seq: u16 = 0;
 
+const Arguments = struct {
+    ttl: u8 = 64,
+};
+
+const help =
+    \\Usage
+    \\  ping [options] <destination>
+    \\
+    \\Options:
+    \\  <destination>      dns name or ip address
+    \\  -h                 print help and exit
+    \\  -t <ttl>           define time to live
+;
+
 pub fn main() !void {
+    var arg_params = Arguments{};
     const args = try std.process.argsAlloc(std.heap.page_allocator);
     defer std.process.argsFree(std.heap.page_allocator, args);
 
     // Ensure IP address has been provided as arg
     if (args.len < 2) {
-        print("Expected IP-Address to be provided as args[1]. For example: zing 127.0.0.1 \n", .{});
+        print("ping: usage error: Destination address required \n", .{});
         return;
     }
-    const socket = setup_socket() catch return undefined;
-    defer os.close(socket);
 
     // Getting IP from the args and convert it to string
     const ipString = args[1];
@@ -51,12 +62,27 @@ pub fn main() !void {
     while (tokenIterator.next()) |token| {
         const byte = try std.fmt.parseInt(u8, token, 10);
         if (byte > 255) {
-            std.debug.print("Invalid IP address\n", .{});
+            std.debug.print("invalid IP address\n", .{});
             return;
         }
         ip_tmp[index] = byte;
         index += 1;
     }
+
+    for (0.., args[1..]) |i, elem| {
+        if (std.mem.eql(u8, elem, "-h")) {
+            print("{s}\n", .{help});
+            return;
+        }
+        if (std.mem.eql(u8, args[i], "-t")) {
+            const argValue = try std.fmt.parseInt(u8, elem, 10);
+            arg_params.ttl = argValue;
+        }
+    }
+    print("arg_params: {any} \n", .{arg_params});
+
+    const socket = setup_socket(arg_params) catch return undefined;
+    defer os.close(socket);
 
     if (index != 4) {
         std.debug.print("Invalid IP address format\n", .{});
@@ -97,7 +123,8 @@ fn send_ping(socket: os.fd_t, packet: []u8, ip: []u8) !void {
     _ = try os.sendto(socket, packet, 0, &dest_addr, @sizeOf(os.sockaddr));
 }
 
-pub fn setup_socket() !os.fd_t {
+pub fn setup_socket(args: Arguments) !os.fd_t {
+    const ttl_val = [4]u8{ args.ttl, 0, 0, 0 };
     // Create the socket.
     const socket = try os.socket(os.AF.INET, SOCK_RAW, IPPROTO_ICMP);
     errdefer os.close(socket);
