@@ -157,15 +157,15 @@ pub fn listener(socket: i32) ?void {
             const icmp_payload = (packet.len) - 8;
             const icmp_total_len = packet.len + ihl;
             if (displayed_init_ping == false) {
-                print("PING {any}.{any}.{any}.{any} ", .{ packet[16], packet[17], packet[18], packet[19] });
-                print("({any}.{any}.{any}.{any}) {any}({any}) bytes of data \n", .{ packet[16], packet[17], packet[18], packet[19], icmp_payload, icmp_total_len });
+                print("PING {any}.{any}.{any}.{any} ", .{ packet[12], packet[13], packet[14], packet[15] });
+                print("({any}.{any}.{any}.{any}) {any}({any}) bytes of data \n", .{ packet[12], packet[13], packet[14], packet[15], icmp_payload, icmp_total_len });
                 displayed_init_ping = true;
             }
 
             const endTime = std.time.milliTimestamp();
             const duration = endTime - startTime;
 
-            print("{any} bytes from {any}.{any}.{any}.{any}: icmp_seq={any} ttl={any} time={any} ms\n", .{ packet.len, packet[16], packet[17], packet[18], packet[19], sequenceNumber, packet[8], duration });
+            print("{any} bytes from {any}.{any}.{any}.{any}: icmp_seq={any} ttl={any} time={any} ms\n", .{ packet.len, packet[12], packet[13], packet[14], packet[15], sequenceNumber, packet[8], duration });
 
             break;
         } else |err| {
