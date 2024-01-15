@@ -2,6 +2,8 @@ const std = @import("std");
 const print = std.debug.print;
 const os = std.os;
 const mem = std.mem;
+const signal = @import("signal");
+const assert = std.debug.assert;
 
 const IP_TTL = 2; //os.IP.TTL;
 const SOCK_RAW = os.SOCK.RAW;
@@ -13,7 +15,7 @@ const SO_RCVTIMEO: comptime_int = os.SO.RCVTIMEO;
 const SOL_IP: comptime_int = os.SOL.IP;
 
 // 64 ms TTL
-var g_interrupted: bool = false;
+var sigint_detected: bool = false;
 
 // 8, 0 type/code
 const req = [_]u8{ 8, 0 };
@@ -23,13 +25,18 @@ const identifier = [_]u8{ 0, 0 };
 const data = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 var startTime: i64 = 0;
-
 var displayed_init_ping = false;
-
 var total_seq: u16 = 0;
 
 const Arguments = struct {
     ttl: u8 = 64,
+};
+
+const PingData = struct {
+    sent: bool = false,
+    icmp_seq: usize,
+    ttl: usize,
+    time_ms: i64,
 };
 
 const help =
@@ -41,6 +48,10 @@ const help =
     \\  -h                 print help and exit
     \\  -t <ttl>           define time to live
 ;
+
+var display_ip: [4]u8 = undefined;
+
+var pingDataList = std.ArrayList(PingData).init(std.heap.page_allocator);
 
 pub fn main() !void {
     var arg_params = Arguments{};
@@ -71,6 +82,7 @@ pub fn main() !void {
 
     var index: usize = 0;
     var tokenIterator = std.mem.tokenize(u8, ipString, ".");
+
     while (tokenIterator.next()) |token| {
         const byte = try std.fmt.parseInt(u8, token, 10);
         if (byte > 255) {
@@ -81,8 +93,6 @@ pub fn main() !void {
         index += 1;
     }
 
-    print("arg_params: {any} \n", .{arg_params});
-
     const socket = setup_socket(arg_params) catch return;
     defer os.close(socket);
 
@@ -91,10 +101,14 @@ pub fn main() !void {
         return;
     }
 
+    display_ip = ip_tmp;
     const ip = &ip_tmp;
 
     var seq_num: usize = 0;
-    while (!g_interrupted) {
+    try setAbortSignalHandler(sigintHandler);
+
+    defer pingDataList.deinit();
+    while (!sigint_detected) {
         seq_num += 1;
         const lowerByte = @as(u8, @intCast(seq_num & 0xFF));
         const upperByte = @as(u8, @intCast(seq_num >> 8));
@@ -109,7 +123,7 @@ pub fn main() !void {
         // Actual send and await for the resp data
         startTime = std.time.milliTimestamp();
         try send_ping(socket, &packet, ip);
-        _ = listener(socket);
+        _ = try listener(socket);
 
         // One second delay
         const nanoseconds_in_second = std.time.ns_per_s;
@@ -135,13 +149,12 @@ pub fn setup_socket(args: Arguments) !os.fd_t {
     return socket;
 }
 
-pub fn listener(socket: i32) ?void {
+pub fn listener(socket: i32) !void {
     // Set the socket timeout to 1 second.
-    const ts = os.timespec{ .tv_sec = 1, .tv_nsec = 0 };
+    const ts = os.timespec{ .tv_sec = 5, .tv_nsec = 0 };
 
     os.setsockopt(socket, SOL_SOCKET, 2, mem.asBytes(&ts)) catch |err| {
         print("setsockopt catch ? {any} \n", .{err});
-        return null;
     };
 
     var recv_addr: os.sockaddr = undefined;
@@ -196,6 +209,12 @@ pub fn listener(socket: i32) ?void {
 
             print("{any} bytes from {any}.{any}.{any}.{any}: icmp_seq={any} ttl={any} time={any} ms\n", .{ packet.len, packet[12], packet[13], packet[14], packet[15], sequenceNumber, packet[8], duration });
 
+            try pingDataList.append(PingData{
+                .sent = true,
+                .icmp_seq = sequenceNumber,
+                .ttl = packet[8],
+                .time_ms = duration,
+            });
             break;
         } else |err| {
             print("ERROR {any} \n", .{err});
@@ -203,7 +222,6 @@ pub fn listener(socket: i32) ?void {
         }
         print("Attempts {d}\n", .{attempts});
     }
-    return null;
 }
 
 pub fn recv_ping(socket: os.fd_t, recv_addr: *os.sockaddr, packet: []u8) !usize {
@@ -225,4 +243,41 @@ fn calc_checksum(array: []u8) struct { be: u8, le: u8 } {
     const upperByte = @as(u8, @intCast(~sum >> 8));
 
     return .{ .be = upperByte, .le = lowerByte };
+}
+
+// SigInt handling
+
+fn setAbortSignalHandler(comptime handler: *const fn () void) !void {
+    const internal_handler = struct {
+        fn internal_handler(sig: c_int) callconv(.C) void {
+            assert(sig == os.SIG.INT);
+            handler();
+        }
+    }.internal_handler;
+    const act = os.Sigaction{
+        .handler = .{ .handler = internal_handler },
+        .mask = os.empty_sigset,
+        .flags = 0,
+    };
+    try os.sigaction(os.SIG.INT, &act, null);
+}
+
+fn sigintHandler() void {
+    sigint_detected = true;
+    std.debug.print("\n---{}.{}.{}.{} ping statistics ---\n", .{ display_ip[0], display_ip[1], display_ip[2], display_ip[3] });
+    var sent: usize = 0;
+    var total_time: i64 = 0;
+    const total_packets = pingDataList.items.len;
+    for (pingDataList.items) |item| {
+        if (item.sent) {
+            sent += 1;
+        }
+        total_time += item.time_ms;
+    }
+    var lost_percentage: u64 = 100;
+    if (total_packets > 0) {
+        lost_percentage = ((total_packets - sent) / total_packets) * 100;
+    }
+
+    std.debug.print("{} packets, transmitted, {} received, {}% packet loss, time {}ms\n", .{ pingDataList.items.len, sent, lost_percentage, total_time });
 }
