@@ -123,11 +123,14 @@ pub fn main() !void {
         // Actual send and await for the resp data
         startTime = std.time.milliTimestamp();
         try send_ping(socket, &packet, ip);
-        _ = try listener(socket);
 
-        // One second delay
+        const thread = try std.Thread.spawn(.{}, listener, .{socket});
+
+        // One second delay before detach if the dest address does not reply.
+        // This if far from ideal, but for now it does the job.
         const nanoseconds_in_second = std.time.ns_per_s;
         std.time.sleep(nanoseconds_in_second);
+        defer thread.detach();
     }
     displayed_init_ping = false;
 }
